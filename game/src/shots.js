@@ -1,126 +1,70 @@
-// Deterministic screenshot scenes (?shot=start|play|chase|end&seed=1).
-// Each one plays the real rules forward from a fresh world for a fixed
-// number of steps, steered by a road-following autopilot, so the frame is
-// what real play looks like and the same seed always gives the same frame.
-import { STEP, ROAD } from './config.js';
-import { makeInput, clearPressed } from './input.js';
-import { dist, angleDiff, clamp } from './random.js';
-import { SCREEN_TITLE, SCREEN_PLAY, SCREEN_BUSTED } from './render.js';
-import { makeCop } from './entities.js';
+// Scene deterministik untuk screenshots (?shot=start|play|chase|end&seed=1).
+// Setiap scene: set state dunia, jalankan sejumlah frame tetap, lalu render.
+import { stepWorld } from './world.js';
+import { Input } from './input.js';
+import { makeCar } from './entities.js';
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const CHASE_SECONDS = 9;
-
-// Road-following waypoint: first reach the target's avenue along the
-// current street, then drive down the avenue to the target.
-function waypointFor(world, tx, ty) {
+function putPlayerInCar(world, x, y, angle, speed) {
+  const car = makeCar(x, y, angle, 'player', '#c0392b');
+  car.speed = speed;
   const p = world.player;
-  const targetAvenue = ROAD.avenues.reduce((best, ax) => (Math.abs(ax - tx) < Math.abs(best - tx) ? ax : best), ROAD.avenues[0]);
-  if (Math.abs(p.x - targetAvenue) > 48) {
-    const street = ROAD.streets.reduce((best, sy) => (Math.abs(sy - p.y) < Math.abs(best - p.y) ? sy : best), ROAD.streets[0]);
-    return { x: targetAvenue, y: street };
-  }
-  return { x: tx, y: ty };
+  p.car = car;
+  p.onFoot = false;
+  p.x = x;
+  p.y = y;
+  p.angle = angle;
+  p.speed = speed;
+  return car;
 }
 
-function autopilot(world) {
-  const input = makeInput();
+function driveFrames(world, frames) {
+  const input = new Input();
+  input.setKey('KeyW', true);
+  for (let i = 0; i < frames; i++) stepWorld(world, input, 1 / 60);
+  input.endFrame();
+}
+
+export function setupShot(world, name) {
   const p = world.player;
-  if (p.onFoot) {
-    // Walk to the nearest car that can be entered.
-    let best = null;
-    let bestD = Infinity;
-    for (const car of world.traffic) {
-      if (car.dead || car.hp <= 0) continue;
-      if (!car.parked && car.speed > 40) continue;
-      const d = dist(p.x, p.y, car.x, car.y);
-      if (d < bestD) { bestD = d; best = car; }
-    }
-    if (!best) return input;
-    const dx = best.x - p.x;
-    const dy = best.y - p.y;
-    if (dx > 12) input.right = true;
-    if (dx < -12) input.left = true;
-    if (dy > 12) input.down = true;
-    if (dy < -12) input.up = true;
-    if (bestD < 46) input.pressedInteract = true;
-    return input;
+  if (name === 'start') {
+    world.state = 'title';
+    world.time = 1;
+    return;
   }
-  // Driving: steer toward the road waypoint for the mission target.
-  const target = world.missionTarget();
-  const tx = target ? target.x : p.x + 600;
-  const ty = target ? target.y : p.y;
-  const wp = waypointFor(world, tx, ty);
-  const desired = Math.atan2(wp.y - p.y, wp.x - p.x);
-  const diff = angleDiff(p.angle, desired);
-  const d = dist(p.x, p.y, wp.x, wp.y);
-  if (Math.abs(diff) > 2.4 && d > 120) {
-    input.down = true; // reverse out of a bad angle
-  } else {
-    input.up = true;
-  }
-  if (diff > 0.12) input.right = true;
-  else if (diff < -0.12) input.left = true;
-  return input;
-}
-
-function runFor(world, seconds, drive) {
-  const steps = Math.round(seconds / STEP);
-  for (let i = 0; i < steps; i += 1) {
-    const input = drive ? autopilot(world) : makeInput();
-    world.step(STEP, input);
-    clearPressed(input);
-    if (world.screen !== 'play') break;
-  }
-}
-
-/**
- * Set `world` to the named scene and return the screen to draw over it.
- * Names: start (title), play (driving to the first job), chase (wanted 3,
- * PD cars on the tail), end (busted). Any other name is start.
- */
-export function stageShot(name, world) {
-  world.reset();
-  world.screen = 'play';
-  if (name !== 'play' && name !== 'chase' && name !== 'end') {
-    runFor(world, START_SECONDS, false);
-    world.screen = 'title';
-    return { screen: SCREEN_TITLE };
+  if (name === 'play') {
+    world.state = 'play';
+    // Misi 3 Getaway Driver sedang jalan, wanted 3, ngebut di jalan.
+    world.missions.index = 2;
+    world.missions.active = true;
+    world.missions._buildStages();
+    world.missions.stageIdx = 1;
+    world.missions.message = 'Kabur dari polisi — bertahan!';
+    world.alertWanted(3);
+    putPlayerInCar(world, 1500, 1100, 0, 480);
+    driveFrames(world, 90);
+    return;
   }
   if (name === 'chase') {
-    // Put the player in a car, heat the trail to 3 stars, add two PD cars.
-    runFor(world, 2, true);
-    if (world.player.onFoot) {
-      const car = world.traffic.find((c) => c.parked && !c.dead);
-      if (car) {
-        world.player.x = car.x - 30;
-        world.player.y = car.y;
-        const input = makeInput();
-        input.pressedInteract = true;
-        world.step(STEP, input);
-      }
-    }
-    world.heat = 70;
-    world.wantedStars = 3;
-    for (let i = 0; i < 2; i += 1) {
-      const cop = makeCop('car', world.player.x + (i === 0 ? -260 : 200), world.player.y + (i === 0 ? -140 : 180));
-      world.cops.push(cop);
-    }
-    runFor(world, CHASE_SECONDS, true);
-    return { screen: SCREEN_PLAY };
+    world.state = 'play';
+    world.alertWanted(5);
+    putPlayerInCar(world, 1500, 1100, 0, 380);
+    // Dua mobil PD + satu polisi jalan kaki mengejar dari dekat.
+    const pd1 = makeCar(1380, 1100, 0, 'pd', '#1a1a2e');
+    pd1.speed = 420;
+    const pd2 = makeCar(1500, 980, Math.PI / 2, 'pd', '#1a1a2e');
+    pd2.speed = 400;
+    world.pdCars.push(pd1, pd2);
+    const cop = { x: 1620, y: 1160, angle: 0, speed: 0, state: 'chase', hp: 100, lastSeen: world.time, bustT: 0, shootCd: 0, dir: 0, dirT: 0 };
+    world.footCops.push(cop);
+    driveFrames(world, 60);
+    return;
   }
   if (name === 'end') {
-    // Stand still while a foot cop closes in and makes the bust.
-    const cop = makeCop('foot', world.player.x + 90, world.player.y + 40);
-    world.cops.push(cop);
-    runFor(world, 12, false);
-    if (world.screen !== 'busted') world.busted();
-    return { screen: SCREEN_BUSTED };
+    world.state = 'busted';
+    world.bannerData = { title: 'BUSTED', sub: 'Denda $200 — dibebaskan di Rosa Garage', t: 99 };
+    world.player.hp = 12;
+    world.setWanted(0);
+    return;
   }
-  // play: drive to the first job.
-  runFor(world, PLAY_SECONDS, true);
-  return { screen: world.screen === 'play' ? SCREEN_PLAY : world.screen };
+  world.state = 'title';
 }
-
-export { clamp };

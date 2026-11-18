@@ -1,190 +1,177 @@
-// Procedural Solmara: one seed builds the whole city — roads, blocks,
-// buildings, park, beach, marina and the mission landmarks (all on roads,
-// so every objective is reachable). Pure: no DOM, no canvas.
-import { WORLD, ROAD, PARK, MARINA, DISTRICT_NAMES, LANDMARK_POINTS, PALETTE } from './config.js';
-import { Rng, hashString, clamp } from './random.js';
+// Kota Solmara: semua prosedural dari satu seed. Jalan grid, 12 distrik,
+// pantai + laut di timur, marina, Lumen Park, gedung-gedung.
+import { CFG } from './config.js';
+import { makeRng } from './random.js';
 
-export function districtAt(x, y) {
-  // The park is the block interior; the roads around it are not the park.
-  if (x > PARK.x0 + ROAD.halfWidth && x < PARK.x1 - ROAD.halfWidth && y > PARK.y0 + ROAD.halfWidth && y < PARK.y1 - ROAD.halfWidth) return 'Lumen Park';
-  if (x >= ROAD.waterX) return 'Sun Coast';
-  if (x >= ROAD.beachX) return 'East Beach';
-  const col = clamp(Math.floor(x / 800), 0, 3);
-  const row = clamp(Math.floor(y / 800), 0, 2);
-  return DISTRICT_NAMES[row][col];
-}
+export const DISTRICTS = [
+  ['Northgate', 'Downtown', 'Coral Row', 'Marina Bay'],
+  ['Little Vela', 'Lumen Park', 'Foundry', 'East Docks'],
+  ['Palm Court', 'Sunset Strip', 'The Yards', 'Old Harbor'],
+];
 
-export function isWater(x, y) {
-  return x >= ROAD.waterX && y >= 0 && y <= WORLD.height;
-}
-
-export function isBeach(x, y) {
-  return x >= ROAD.beachX && x < ROAD.waterX;
-}
-
-export function isPark(x, y) {
-  return x > PARK.x0 + ROAD.halfWidth && x < PARK.x1 - ROAD.halfWidth && y > PARK.y0 + ROAD.halfWidth && y < PARK.y1 - ROAD.halfWidth;
-}
-
-export function isRoadPoint(x, y) {
-  for (const ax of ROAD.avenues) if (Math.abs(x - ax) <= ROAD.halfWidth) return true;
-  for (const sy of ROAD.streets) if (Math.abs(y - sy) <= ROAD.halfWidth) return true;
-  return false;
-}
-
-// Nearest road-centre point (used to snap spawn and mission points onto roads).
-export function nearestRoadPoint(x, y) {
-  let bestX = ROAD.avenues[0];
-  let bestD = Infinity;
-  for (const ax of ROAD.avenues) {
-    const d = Math.abs(x - ax);
-    if (d < bestD) { bestD = d; bestX = ax; }
-  }
-  let bestY = ROAD.streets[0];
-  bestD = Infinity;
-  for (const sy of ROAD.streets) {
-    const d = Math.abs(y - sy);
-    if (d < bestD) { bestD = d; bestY = sy; }
-  }
-  return { x: bestX, y: bestY };
-}
-
-function blockHasBuildings(x0, y0, x1, y1) {
-  // No buildings in the park, in the sea, or on the marina strip.
-  if (x0 >= PARK.x0 && x1 <= PARK.x1 && y0 >= PARK.y0 && y1 <= PARK.y1) return false;
-  if (x0 >= ROAD.beachX) return false;
-  if (x0 >= MARINA.x0 && y0 >= MARINA.y0 && y1 <= MARINA.y1) return false;
-  return true;
-}
+const PARK = { x: 1000, y: 800, w: 400, h: 400 };
+const MARINA = { x: 2700, y: 400, w: 260, h: 500 };
+const ROOF_COLORS = ['#8a6f5c', '#7d8a99', '#9c8a7a', '#6f7d6a', '#a08a6a', '#7a6a8a'];
 
 export function generateCity(seed) {
-  const rng = new Rng(seed);
-  const buildings = [];
-  const trees = [];
-  const parkedSpots = [];
+  const rng = makeRng(seed);
+  const avenues = [];
+  for (let x = 100; x <= 2900; x += CFG.roadGap) avenues.push(x);
+  const streets = [];
+  for (let y = 100; y <= 2300; y += CFG.roadGap) streets.push(y);
 
-  // Buildings fill every block between two roads.
-  for (let ai = 0; ai < ROAD.avenues.length - 1; ai += 1) {
-    for (let si = 0; si < ROAD.streets.length - 1; si += 1) {
-      const x0 = ROAD.avenues[ai] + ROAD.halfWidth + 18;
-      const x1 = ROAD.avenues[ai + 1] - ROAD.halfWidth - 18;
-      const y0 = ROAD.streets[si] + ROAD.halfWidth + 18;
-      const y1 = ROAD.streets[si + 1] - ROAD.halfWidth - 18;
-      if (x1 - x0 < 70 || y1 - y0 < 70) continue;
-      if (!blockHasBuildings(x0, y0, x1, y1)) continue;
-      const count = rng.int(1, 3);
-      const cx = (x0 + x1) / 2;
-      const cy = (y0 + y1) / 2;
-      const district = districtAt(cx, cy);
-      const roof = PALETTE.buildingRoof[hashString(district) % PALETTE.buildingRoof.length];
-      if (count === 1) {
-        const w = rng.range(90, Math.min(150, x1 - x0));
-        const h = rng.range(70, Math.min(120, y1 - y0));
-        buildings.push({ x: cx - w / 2, y: cy - h / 2, w, h, district, roof, height: rng.int(1, 4) });
-      } else {
-        const vertical = rng.chance(0.5);
-        for (let i = 0; i < count; i += 1) {
-          if (vertical) {
-            const w = x1 - x0;
-            const h = (y1 - y0) / count - 10;
-            buildings.push({ x: x0, y: y0 + i * ((y1 - y0) / count), w, h, district, roof, height: rng.int(1, 4) });
-          } else {
-            const w = (x1 - x0) / count - 10;
-            const h = y1 - y0;
-            buildings.push({ x: x0 + i * ((x1 - x0) / count), y: y0, w, h, district, roof, height: rng.int(1, 4) });
-          }
-        }
+  const buildings = [];
+  for (let ai = 0; ai < avenues.length - 1; ai++) {
+    for (let si = 0; si < streets.length - 1; si++) {
+      const bx0 = avenues[ai] + CFG.roadHalf + 8;
+      const by0 = streets[si] + CFG.roadHalf + 8;
+      const bx1 = avenues[ai + 1] - CFG.roadHalf - 8;
+      const by1 = streets[si + 1] - CFG.roadHalf - 8;
+      // Lewati taman dan marina: area terbuka, tanpa gedung.
+      if (rectsOverlap({ x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 }, PARK)) continue;
+      if (rectsOverlap({ x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 }, MARINA)) continue;
+      const n = rng.int(1, 2);
+      for (let k = 0; k < n; k++) {
+        const w = rng.range(50, Math.min(120, bx1 - bx0 - 10));
+        const h = rng.range(50, Math.min(120, by1 - by0 - 10));
+        const x = rng.range(bx0, bx1 - w);
+        const y = rng.range(by0, by1 - h);
+        buildings.push({ x, y, w, h, color: rng.pick(ROOF_COLORS), hgt: rng.int(1, 3) });
       }
     }
   }
 
-  // Trees: dense in Lumen Park, a few along the beach road.
-  for (let i = 0; i < 130; i += 1) {
+  // Pohon-pohon di taman (hiasan, tidak menghalangi).
+  const trees = [];
+  for (let i = 0; i < 46; i++) {
     trees.push({
-      x: rng.range(PARK.x0 + 20, PARK.x1 - 20),
-      y: rng.range(PARK.y0 + 20, PARK.y1 - 20),
-      r: rng.range(9, 16),
+      x: rng.range(PARK.x + 24, PARK.x + PARK.w - 24),
+      y: rng.range(PARK.y + 24, PARK.y + PARK.h - 24),
+      r: rng.range(7, 13),
     });
   }
-  for (let i = 0; i < 24; i += 1) {
-    trees.push({ x: rng.range(2830, 2930), y: rng.range(80, 2320), r: rng.range(7, 11) });
-  }
 
-  // Parked cars on road shoulders, parallel to the road.
-  for (let i = 0; i < 30; i += 1) {
-    const vertical = rng.chance(0.5);
-    if (vertical) {
-      const ax = rng.pick(ROAD.avenues.slice(0, -1));
-      const y = rng.range(200, WORLD.height - 200);
-      const side = rng.chance(0.5) ? 1 : -1;
-      parkedSpots.push({ x: ax + side * ROAD.shoulder, y, angle: side > 0 ? Math.PI / 2 : -Math.PI / 2 });
-    } else {
-      const sy = rng.pick(ROAD.streets);
-      const x = rng.range(200, ROAD.beachX - 120);
-      const side = rng.chance(0.5) ? 1 : -1;
-      parkedSpots.push({ x, y: sy + side * ROAD.shoulder, angle: side > 0 ? 0 : Math.PI });
-    }
-  }
+  // Dermaga marina: papan kayu menjorok ke laut.
+  const docks = [
+    { x: 2980, y: 500, w: 90, h: 12 },
+    { x: 2980, y: 650, w: 110, h: 12 },
+    { x: 2980, y: 800, w: 90, h: 12 },
+  ];
 
-  // Landmarks: snapped to the nearest road centre so they are reachable.
-  const landmarks = {};
-  for (const [key, p] of Object.entries(LANDMARK_POINTS)) {
-    if (key === 'yacht') {
-      landmarks[key] = { x: p.x, y: p.y, label: p.label };
-    } else {
-      const s = nearestRoadPoint(p.x, p.y);
-      landmarks[key] = { x: s.x, y: s.y, label: p.label };
-    }
-  }
+  const landmarks = {
+    garage: nearestRoadPoint(300, 2100, avenues, streets),
+    harborOffice: nearestRoadPoint(500, 300, avenues, streets),
+    marinaCafe: nearestRoadPoint(2700, 500, avenues, streets),
+    velaBank: nearestRoadPoint(1300, 300, avenues, streets),
+    packageDrop: nearestRoadPoint(1100, 1900, avenues, streets),
+    // Yacht The Gold Vela di dermaga tengah; pemain berinteraksi dari ujung dermaga.
+    yacht: { x: 3080, y: 656 },
+    yachtDock: { x: 2980, y: 650 },
+    dropA: nearestRoadPoint(700, 700, avenues, streets),
+    dropB: nearestRoadPoint(2100, 1700, avenues, streets),
+    dropC: nearestRoadPoint(2500, 1100, avenues, streets),
+    farePickup: nearestRoadPoint(900, 1500, avenues, streets),
+    fareDropoff: nearestRoadPoint(2700, 500, avenues, streets),
+  };
 
-  return { seed, buildings, trees, parkedSpots, landmarks };
+  return { avenues, streets, buildings, trees, docks, landmarks, park: PARK, marina: MARINA };
 }
 
-// Push a circle out of every building it overlaps. Returns true on a hit.
-export function collideBuildings(city, body) {
-  let hit = false;
-  const r = body.radius;
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+export function nearestRoadPoint(x, y, avenues, streets) {
+  let bestX = avenues[0];
+  let bestDx = Infinity;
+  for (const ax of avenues) {
+    const d = Math.abs(ax - x);
+    if (d < bestDx) {
+      bestDx = d;
+      bestX = ax;
+    }
+  }
+  let bestY = streets[0];
+  let bestDy = Infinity;
+  for (const sy of streets) {
+    const d = Math.abs(sy - y);
+    if (d < bestDy) {
+      bestDy = d;
+      bestY = sy;
+    }
+  }
+  // Pilih sumbu jalan terdekat dari titik asal.
+  return bestDx <= bestDy ? { x: bestX, y } : { x, y: bestY };
+}
+
+export function isRoadAt(city, x, y) {
+  if (x < 0 || y < 0 || x >= CFG.worldW || y >= CFG.worldH) return false;
+  if (x >= CFG.beachX) return false;
+  for (const ax of city.avenues) if (Math.abs(x - ax) <= CFG.roadHalf) return true;
+  for (const sy of city.streets) if (Math.abs(y - sy) <= CFG.roadHalf) return true;
+  return false;
+}
+
+export function inBuilding(city, x, y) {
   for (const b of city.buildings) {
-    const cx = clamp(body.x, b.x, b.x + b.w);
-    const cy = clamp(body.y, b.y, b.y + b.h);
-    const dx = body.x - cx;
-    const dy = body.y - cy;
-    const d2 = dx * dx + dy * dy;
-    if (d2 >= r * r) continue;
-    hit = true;
-    if (d2 > 0.0001) {
-      const d = Math.sqrt(d2);
-      body.x = cx + (dx / d) * r;
-      body.y = cy + (dy / d) * r;
-    } else {
-      // Centre inside the building: push out along the shortest side.
-      const left = body.x - b.x;
-      const right = b.x + b.w - body.x;
-      const top = body.y - b.y;
-      const bottom = b.y + b.h - body.y;
-      const m = Math.min(left, right, top, bottom);
-      if (m === left) body.x = b.x - r;
-      else if (m === right) body.x = b.x + b.w + r;
-      else if (m === top) body.y = b.y - r;
-      else body.y = b.y + b.h + r;
-    }
+    if (x > b.x + 2 && x < b.x + b.w - 2 && y > b.y + 2 && y < b.y + b.h - 2) return b;
   }
-  return hit;
+  return null;
 }
 
-export function collideWorldBounds(body, margin) {
-  const m = margin || 0;
-  const before = { x: body.x, y: body.y };
-  body.x = clamp(body.x, m, WORLD.width - m);
-  body.y = clamp(body.y, m, WORLD.height - m);
-  return before.x !== body.x || before.y !== body.y;
+export function isWater(city, x, y) {
+  return x >= CFG.waterX && y >= 0 && y < CFG.worldH;
 }
 
-// Cars cannot drive into the sea; people on foot can wade to the beach only.
-export function blockWater(body, isCar) {
-  if (!isCar) {
-    if (body.x > ROAD.waterX - 8) body.x = ROAD.waterX - 8;
-    return;
+export function isBeach(city, x, y) {
+  return x >= CFG.beachX && x < CFG.waterX;
+}
+
+export function isPark(city, x, y) {
+  const p = city.park;
+  return x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h;
+}
+
+// Titik boleh dipijak mobil/pejalan: bukan gedung, bukan air.
+export function isBlocked(city, x, y) {
+  if (x < 8 || y < 8 || x >= CFG.worldW - 8 || y >= CFG.worldH - 8) return true;
+  if (isWater(city, x, y)) return true;
+  return inBuilding(city, x, y) !== null;
+}
+
+export function districtAt(city, x, y) {
+  if (x >= CFG.beachX) return 'Sun Coast';
+  if (isPark(city, x, y)) return 'Lumen Park';
+  const col = Math.min(3, Math.max(0, Math.floor(x / 740)));
+  const row = Math.min(2, Math.max(0, Math.floor(y / 800)));
+  return DISTRICTS[row][col];
+}
+
+// Geser titik ke jalan terdekat (dipakai saat menaruh mobil parkir & target misi).
+export function snapToRoad(city, x, y) {
+  return nearestRoadPoint(x, y, city.avenues, city.streets);
+}
+
+// Cari titik jalan bebas gedung dalam radius — dipakai untuk spawn mobil parkir.
+export function freeRoadPoint(city, rng, cx, cy, radius) {
+  for (let tries = 0; tries < 40; tries++) {
+    const a = rng.range(0, Math.PI * 2);
+    const r = rng.range(0, radius);
+    const p = snapToRoad(city, cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    if (!isBlocked(city, p.x, p.y)) return p;
   }
-  if (body.x > ROAD.beachX - 20) body.x = ROAD.beachX - 20;
+  return snapToRoad(city, cx, cy);
+}
+
+// Sama, tapi titik hasil snap harus tetap sejauh minR*0.7 dari pusat —
+// dipakai spawn polisi supaya tidak muncul tepat di sebelah pemain.
+export function freeRoadPointMin(city, rng, cx, cy, minR, maxR) {
+  for (let tries = 0; tries < 60; tries++) {
+    const a = rng.range(0, Math.PI * 2);
+    const r = rng.range(minR, maxR);
+    const p = snapToRoad(city, cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    if (Math.hypot(p.x - cx, p.y - cy) < minR * 0.7) continue;
+    if (!isBlocked(city, p.x, p.y)) return p;
+  }
+  return snapToRoad(city, cx, cy);
 }

@@ -1,57 +1,57 @@
 # SOLMARA — Sun Coast Hustle
 
-An open-world crime game in the spirit of GTA 6, built for the make.fun
-gta6-01 bounty. 2D top-down, canvas, no libraries, no network, no external
-assets — every image is drawn in code, every sound is synthesised WebAudio.
+Open-world crime game (2D top-down, canvas, no libraries, no network) for
+make.fun competition **gta6-01**. Original city, characters, story, art and
+sound — nothing from Rockstar / GTA or any other commercial game.
 
 ## The game
 
-Explore the procedural city of Solmara (3.2 x 2.4 km, 12 named districts,
-beach and sea on the east, Lumen Park, marina) on foot and by car. Steal
-parked cars, drive arcade-style with handbrake drift, dodge traffic and
-pedestrians. A wanted level of 0-5 stars brings Solmara PD foot cops and
-patrol cars after you; lose the trail and the heat cools off.
-
-Run five jobs for Jax Marlowe and the Harbor Crew — First Fare, Harbor
-Package, Getaway Driver, The Gold Vela, The Big Score — for $300 to $2,500
-each. Finish them all and you are the King of Solmara. Combat: shoot with
-the mouse (F), punch (Space), reload (R). Cash, health, wanted stars,
-minimap, mission line and speed on the HUD. Progress saves to localStorage.
+- **City of Solmara** (3.2 × 2.4 km): grid streets, beach + sea to the east,
+  marina, Lumen Park, Downtown, 12 named districts — all procedural from
+  one seed, fully deterministic.
+- **On foot + by car**: WASD walk/run, E enter/steal a car, arcade driving
+  with handbrake drift, traffic and pedestrians, collision damage.
+- **Wanted 0–5 stars**: steal a car in front of police, hit pedestrians,
+  shoot — PD cars chase, ram and shoot; foot cops chase and bust you.
+  Lose the trail and the heat cools down, stars drop one by one.
+- **5 Harbor Crew missions (Jax Marlowe)**: First Fare ($300), Harbor
+  Package ($650), Getaway Driver ($900 — steal the marked car, survive
+  45s), The Gold Vela ($1,400), The Big Score ($2,500 — 3 timed drops).
+  Finish them all and become KING OF SOLMARA.
+- **Combat**: shoot (F / mouse, aim with mouse, 12 rounds + reload R),
+  punch (Space). HUD with cash + HP, wanted stars, live minimap, mission
+  guide line, speed. Cash/missions saved to localStorage.
+- **Screens**: title, play, pause, busted, wasted, mission complete, win.
+  All art drawn in code, all sound synthesized with WebAudio.
 
 ## Controls
 
-- WASD / arrows: move / drive (Shift: run)
-- E: enter / exit car
-- F or mouse click: shoot (aim with the mouse)
-- Space: punch on foot, handbrake while driving
-- R: reload · P: pause · M: mute · Enter: start / continue
+| Key | Action |
+| --- | --- |
+| WASD / arrows | Walk / drive |
+| Shift | Run / (in car) — |
+| E | Enter/exit car, steal, start mission at Rosa Garage |
+| F / click | Shoot (aim with mouse) |
+| Space | Punch (on foot) / handbrake (in car) |
+| R | Reload |
+| P / Esc | Pause |
+| Enter | Start / respawn |
 
-## Play it
+## Run it
 
 ```sh
-node serve.ts
-# open http://localhost:8080
+node serve.ts        # http://localhost:8080
 ```
 
-## Structure
-
-- `game/src/config.js` — tuning, districts, missions
-- `game/src/random.js` — seeded RNG
-- `game/src/input.js` — keyboard + mouse
-- `game/src/audio.js` — WebAudio synth effects
-- `game/src/city.js` — procedural city + collision
-- `game/src/entities.js` — traffic, pedestrians, police
-- `game/src/missions.js` — the five Harbor Crew jobs
-- `game/src/world.js` — the simulation
-- `game/src/render.js` — canvas drawing, HUD, minimap, menus
-- `game/src/shots.js` — deterministic screenshot scenes
-- `game/src/main.js` — boot + fixed-step loop
-
-## Hand in
+## Hand it in
 
 ```sh
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ```
 
-`main.ts` copies `game/` and `screenshots/` to `/output` and writes
-`dossier.json` with the vendored make.fun library.
+Screenshots are real renders of the game (`?shot=…&seed=1`), listed in
+`shots.json`.
+
+## License
+
+MIT — see `LICENSE`.
