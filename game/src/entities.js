@@ -1,223 +1,339 @@
-// Cars, pedestrians and police. All movement is pure simulation — no DOM,
-// so the logic test can drive these directly.
-import { WORLD, ROAD, CAR, COP } from './config.js';
-import { Rng, clamp, angleDiff, dist } from './random.js';
-import { isRoadPoint, nearestRoadPoint, collideBuildings, collideWorldBounds, blockWater } from './city.js';
+// Mobil, pejalan kaki, polisi. Semua update menerima `world` apa adanya
+// (tanpa import world.js) supaya modul ini bisa dipakai logic test.
+import { CFG } from './config.js';
+import { isBlocked, isRoadAt, snapToRoad, freeRoadPoint, freeRoadPointMin } from './city.js';
 
-const CAR_COLORS = ['#c94f38', '#3e7a4e', '#c9a13b', '#7a5a9e', '#4a6b8c', '#8c8c8c', '#b8b0a0'];
-const SPORT_COLORS = ['#d8232a', '#f2a007', '#1fb6c9'];
+const CAR_COLORS = ['#c0392b', '#2980b9', '#f39c12', '#27ae60', '#8e44ad', '#dfe6e9', '#2d3436', '#e17055', '#00b8a9'];
+const PED_COLORS = ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71', '#9b59b6', '#fd79a8', '#e67e22', '#1abc9c'];
 
 let nextId = 1;
-export function resetIds() { nextId = 1; }
 
-export function makeCar(kind, x, y, angle, rng) {
-  const sport = kind === 'sport';
+export function makeCar(x, y, angle, kind, color) {
   return {
-    id: nextId,
-    kind, // 'sedan' | 'sport' | 'taxi' | 'pd' | 'parked'
+    id: nextId++,
     x, y,
-    angle: angle || 0,
+    angle,
     speed: 0,
-    hp: CAR.hp,
-    radius: CAR.radius,
-    color: kind === 'pd' ? '#2e6fd8' : kind === 'taxi' ? '#e8c832' : sport ? (rng ? rng.pick(SPORT_COLORS) : SPORT_COLORS[0]) : (rng ? rng.pick(CAR_COLORS) : CAR_COLORS[0]),
-    parked: kind === 'parked',
-    driver: kind !== 'parked',
-    dir: 0, // traffic heading: 0=E 1=S 2=W 3=N
-    lane: 0,
+    kind, // parked | traffic | pd | player
+    color: color || CAR_COLORS[Math.floor(Math.random() * CAR_COLORS.length)],
+    hp: kind === 'pd' ? 220 : 120,
+    steer: 0,
     crashCd: 0,
-    dead: false,
+    ramCd: 0,
+    shootCd: 0,
+    len: 46,
+    wid: 22,
   };
 }
 
-export function makePed(x, y, rng) {
+export function makePed(x, y) {
   return {
-    id: nextId,
+    id: nextId++,
     x, y,
-    angle: rng ? rng.angle() : 0,
-    speed: rng ? rng.range(45, 75) : 55,
-    hp: 100,
-    radius: 10,
+    angle: Math.random() * Math.PI * 2,
+    speed: 0,
     state: 'walk', // walk | flee | down
+    hp: 50,
+    color: PED_COLORS[Math.floor(Math.random() * PED_COLORS.length)],
+    dir: Math.random() * Math.PI * 2,
+    dirT: 0,
     fleeT: 0,
-    turnT: 0,
-    dead: false,
   };
 }
 
-export function makeCop(kind, x, y) {
+export function makeFootCop(x, y) {
   return {
-    id: nextId,
-    kind, // 'foot' | 'car'
+    id: nextId++,
     x, y,
     angle: 0,
     speed: 0,
+    state: 'patrol', // patrol | chase | giveup
     hp: 100,
-    radius: kind === 'car' ? CAR.radius : 12,
-    state: 'chase',
-    loseT: 0,
-    ramCd: 0,
+    lastSeen: -99,
     bustT: 0,
     shootCd: 0,
-    dead: false,
+    dir: Math.random() * Math.PI * 2,
+    dirT: 0,
   };
 }
 
-// --- Traffic: drive along the road grid, turn at intersections. ---
-const DIRS = [
-  { dx: 1, dy: 0 },
-  { dx: 0, dy: 1 },
-  { dx: -1, dy: 0 },
-  { dx: 0, dy: -1 },
-];
-
-export function stepTrafficCar(car, dt, rng, others) {
-  if (car.parked || car.dead) return;
-  const d = DIRS[car.dir];
-  const targetSpeed = 150;
-  // Slow down for the car ahead.
-  let ahead = Infinity;
-  for (const o of others) {
-    if (o === car || o.parked || o.dead) continue;
-    const dx = o.x - car.x;
-    const dy = o.y - car.y;
-    const along = dx * d.dx + dy * d.dy;
-    const side = Math.abs(dx * d.dy - dy * d.dx);
-    if (along > 0 && along < 90 && side < 26) ahead = Math.min(ahead, along);
+// Geser lingkaran (radius r) ke (nx, ny); sumbu dipisah supaya geser di dinding.
+export function tryMove(city, e, nx, ny, r) {
+  if (!isBlocked(city, nx + Math.sign(nx - e.x) * r, e.y) && !isBlocked(city, nx, e.y + r) && !isBlocked(city, nx, e.y - r)) {
+    e.x = nx;
+  } else if (!isBlocked(city, e.x + Math.sign(nx - e.x) * r, e.y)) {
+    e.x = nx;
   }
-  const want = ahead < 70 ? 0 : targetSpeed;
-  car.speed += clamp(want - car.speed, -500 * dt, 260 * dt);
-  car.x += d.dx * car.speed * dt;
-  car.y += d.dy * car.speed * dt;
-  car.angle = Math.atan2(d.dy, d.dx);
-
-  // At an intersection, sometimes turn onto the crossing road.
-  const nearV = ROAD.avenues.some((ax) => Math.abs(car.x - ax) < 14);
-  const nearH = ROAD.streets.some((sy) => Math.abs(car.y - sy) < 14);
-  if (nearV && nearH && rng.chance(0.35)) {
-    const vertical = d.dy !== 0;
-    if (vertical) {
-      car.dir = rng.chance(0.5) ? 0 : 2;
-      car.y = nearestRoadPoint(car.x, car.y).y;
-    } else {
-      car.dir = rng.chance(0.5) ? 1 : 3;
-      car.x = nearestRoadPoint(car.x, car.y).x;
-    }
-  }
-  // Off the map: respawn on a random road edge.
-  if (car.x < 40 || car.x > ROAD.beachX - 20 || car.y < 40 || car.y > WORLD.height - 40) {
-    const vertical = rng.chance(0.5);
-    if (vertical) {
-      car.x = rng.pick(ROAD.avenues.slice(0, -1));
-      car.y = rng.chance(0.5) ? 90 : WORLD.height - 90;
-      car.dir = car.y < 200 ? 1 : 3;
-    } else {
-      car.y = rng.pick(ROAD.streets);
-      car.x = rng.chance(0.5) ? 90 : ROAD.beachX - 120;
-      car.dir = car.x < 200 ? 0 : 2;
-    }
-    car.speed = 120;
+  if (!isBlocked(city, e.x, ny + Math.sign(ny - e.y) * r) && !isBlocked(city, e.x + r, ny) && !isBlocked(city, e.x - r, ny)) {
+    e.y = ny;
+  } else if (!isBlocked(city, e.x, e.y + Math.sign(ny - e.y) * r)) {
+    e.y = ny;
   }
 }
 
-export function stepPed(ped, dt, rng, threat) {
-  if (ped.dead || ped.state === 'down') return;
-  ped.turnT -= dt;
-  if (threat && dist(ped.x, ped.y, threat.x, threat.y) < 260) {
-    ped.state = 'flee';
-    ped.fleeT = 1.5;
+export function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+// Fisika mobil arcade: throttle -1..1, steer -1..1, handbrake = drift.
+export function stepCar(car, throttle, steer, handbrake, dt) {
+  const maxSpd = CFG.carMax;
+  if (throttle > 0) car.speed += CFG.carAccel * throttle * dt;
+  else if (throttle < 0) {
+    if (car.speed > 5) car.speed -= CFG.carBrake * dt;
+    else car.speed += CFG.carReverse * dt * -throttle;
+  } else {
+    car.speed -= Math.sign(car.speed) * CFG.carDrag * Math.abs(car.speed) * dt * 2;
+    if (Math.abs(car.speed) < 4) car.speed = 0;
   }
-  if (ped.state === 'flee') {
-    if (!threat) {
-      ped.state = 'walk';
+  if (handbrake) car.speed *= Math.max(0, 1 - 2.2 * dt);
+  car.speed = Math.max(-CFG.carReverse, Math.min(maxSpd, car.speed));
+  const turnRate = CFG.carTurn * Math.min(1, Math.abs(car.speed) / 180) * (handbrake ? 1.7 : 1);
+  car.angle += steer * turnRate * Math.sign(car.speed) * dt;
+  return car;
+}
+
+export function moveCar(city, car, dt) {
+  const nx = car.x + Math.cos(car.angle) * car.speed * dt;
+  const ny = car.y + Math.sin(car.angle) * car.speed * dt;
+  const r = 16;
+  // Cek hidung + ekor supaya mobil tidak menembus gedung.
+  const noseX = nx + Math.cos(car.angle) * 20;
+  const noseY = ny + Math.sin(car.angle) * 20;
+  const tailX = nx - Math.cos(car.angle) * 20;
+  const tailY = ny - Math.sin(car.angle) * 20;
+  if (!isBlocked(city, noseX, noseY) && !isBlocked(city, tailX, tailY) && !isBlocked(city, nx, ny)) {
+    car.x = nx;
+    car.y = ny;
+    return true;
+  }
+  // Menabrak: berhenti, pantul sedikit.
+  if (Math.abs(car.speed) > 120) car.speed *= -0.25;
+  else car.speed = 0;
+  return false;
+}
+
+// Mobil parkir di bahu jalan, sejajar arah jalan (tidak pernah di gedung).
+export function spawnParkedCars(world, count, avoid = []) {
+  const { city, rng } = world;
+  let placed = 0;
+  for (let tries = 0; tries < count * 30 && placed < count; tries++) {
+    const p = freeRoadPoint(city, rng, rng.range(200, 3000), rng.range(200, 2200), 300);
+    if (avoid.some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 90)) continue;
+    if (world.cars.some((c) => Math.hypot(c.x - p.x, c.y - p.y) < 70)) continue;
+    // Arah sejajar jalan: kalau di avenue (x dekat jalan vertikal) -> vertikal.
+    const onAvenue = city.avenues.some((ax) => Math.abs(p.x - ax) <= CFG.roadHalf);
+    const angle = onAvenue ? (rng.chance(0.5) ? Math.PI / 2 : -Math.PI / 2) : rng.chance(0.5) ? 0 : Math.PI;
+    const shoulder = onAvenue ? CFG.roadHalf + 12 : 0;
+    const px = onAvenue ? p.x + (rng.chance(0.5) ? shoulder : -shoulder) : p.x;
+    const py = onAvenue ? p.y : p.y + (rng.chance(0.5) ? CFG.roadHalf + 12 : -CFG.roadHalf - 12);
+    if (isBlocked(city, px, py)) continue;
+    world.cars.push(makeCar(px, py, angle, 'parked'));
+    placed++;
+  }
+  return placed;
+}
+
+export function spawnTrafficCar(world) {
+  const { city, rng, player } = world;
+  const p = freeRoadPoint(city, rng, player.x, player.y, 700);
+  const onAvenue = city.avenues.some((ax) => Math.abs(p.x - ax) <= CFG.roadHalf);
+  const angle = onAvenue ? (rng.chance(0.5) ? Math.PI / 2 : -Math.PI / 2) : rng.chance(0.5) ? 0 : Math.PI;
+  const car = makeCar(p.x, p.y, angle, 'traffic');
+  car.speed = rng.range(140, 220);
+  world.cars.push(car);
+  return car;
+}
+
+export function updateTraffic(world, dt) {
+  const { city, player } = world;
+  // Jaga ~10 mobil traffic di sekitar pemain.
+  const traffic = world.cars.filter((c) => c.kind === 'traffic');
+  if (traffic.length < 10) spawnTrafficCar(world);
+  for (const car of [...world.cars]) {
+    if (car.kind !== 'traffic') continue;
+    if (dist(car, player) > 1300) {
+      world.cars.splice(world.cars.indexOf(car), 1);
+      continue;
+    }
+    // Jalan lurus di jalannya; di persimpangan kadang belok.
+    if (isRoadAt(city, car.x + Math.cos(car.angle) * 60, car.y + Math.sin(car.angle) * 60)) {
+      if (Math.random() < dt * 0.12) car.angle += (Math.random() < 0.5 ? 1 : -1) * Math.PI / 2;
     } else {
+      // Keluar jalur: belok balik ke jalan terdekat.
+      const p = snapToRoad(city, car.x, car.y);
+      car.angle = Math.atan2(p.y - car.y, p.x - car.x);
+    }
+    if (Math.abs(car.speed) < 140) car.speed = 180;
+    moveCar(city, car, dt);
+  }
+}
+
+export function spawnPedestrian(world) {
+  const { city, rng, player } = world;
+  const p = freeRoadPoint(city, rng, player.x, player.y, 600);
+  const ped = makePed(p.x, p.y);
+  world.peds.push(ped);
+  return ped;
+}
+
+export function updatePedestrians(world, dt) {
+  const { player } = world;
+  const peds = world.peds.filter((p) => p.state !== 'down');
+  if (peds.length < 14) spawnPedestrian(world);
+  for (const ped of [...world.peds]) {
+    if (ped.state === 'down') continue;
+    if (dist(ped, player) > 1100) {
+      world.peds.splice(world.peds.indexOf(ped), 1);
+      continue;
+    }
+    const threat = nearestThreat(world, ped);
+    if (threat && ped.state !== 'flee') {
+      ped.state = 'flee';
+      ped.fleeT = 2.5;
+    }
+    if (ped.state === 'flee') {
       ped.fleeT -= dt;
+      if (threat) {
+        ped.dir = Math.atan2(ped.y - threat.y, ped.x - threat.x);
+        ped.speed = 240;
+      }
       if (ped.fleeT <= 0) ped.state = 'walk';
-      const a = Math.atan2(ped.y - threat.y, ped.x - threat.x);
-      ped.angle = a;
-      ped.x += Math.cos(a) * ped.speed * 1.9 * dt;
-      ped.y += Math.sin(a) * ped.speed * 1.9 * dt;
+    } else {
+      ped.dirT -= dt;
+      if (ped.dirT <= 0) {
+        ped.dir = Math.random() * Math.PI * 2;
+        ped.dirT = 1 + Math.random() * 3;
+      }
+      ped.speed = 55;
     }
-  } else {
-    if (ped.turnT <= 0) {
-      ped.turnT = rng.range(1.5, 4);
-      // Walk along a road: snap the heading to the grid.
-      ped.angle = (Math.floor(rng.next() * 4) * Math.PI) / 2;
-    }
-    ped.x += Math.cos(ped.angle) * ped.speed * dt;
-    ped.y += Math.sin(ped.angle) * ped.speed * dt;
-    if (!isRoadPoint(ped.x, ped.y) && rng.chance(0.02)) {
-      const s = nearestRoadPoint(ped.x, ped.y);
-      ped.x += (s.x - ped.x) * 0.1;
-      ped.y += (s.y - ped.y) * 0.1;
-    }
+    ped.angle = ped.dir;
+    const nx = ped.x + Math.cos(ped.dir) * ped.speed * dt;
+    const ny = ped.y + Math.sin(ped.dir) * ped.speed * dt;
+    tryMove(world.city, ped, nx, ny, 10);
   }
-  collideWorldBounds(ped, 30);
 }
 
-// --- Police ---
-export function stepCopFoot(cop, player, dt) {
-  if (cop.dead) return 'dead';
-  const d = dist(cop.x, cop.y, player.x, player.y);
-  const run = player.wantedStars >= 3;
-  const speed = run ? COP.footRunSpeed : COP.footSpeed;
-  if (d > 26) {
-    const a = Math.atan2(player.y - cop.y, player.x - cop.x);
-    cop.angle = a;
-    cop.x += Math.cos(a) * speed * dt;
-    cop.y += Math.sin(a) * speed * dt;
-    cop.bustT = 0;
-  } else if (player.onFoot) {
-    cop.bustT += dt;
-    if (cop.bustT >= COP.bustSeconds) return 'bust';
-  }
-  if (d > COP.copViewRange) {
-    cop.loseT += dt;
-    if (cop.loseT > COP.giveUpSeconds) return 'giveup';
-  } else {
-    cop.loseT = 0;
-  }
-  return 'chase';
-}
-
-export function stepCopCar(cop, player, dt, city) {
-  if (cop.dead) return null;
-  const d = dist(cop.x, cop.y, player.x, player.y);
-  const target = Math.atan2(player.y - cop.y, player.x - cop.x);
-  const turn = clamp(angleDiff(cop.angle, target), -3.2 * dt, 3.2 * dt);
-  cop.angle += turn;
-  const want = d > 90 ? 560 : 380;
-  cop.speed += clamp(want - cop.speed, -700 * dt, 520 * dt);
-  cop.x += Math.cos(cop.angle) * cop.speed * dt;
-  cop.y += Math.sin(cop.angle) * cop.speed * dt;
-  cop.ramCd -= dt;
-  collideBuildings(city, cop);
-  collideWorldBounds(cop, 20);
-  blockWater(cop, true);
-  if (d > COP.copViewRange * 1.6) {
-    cop.loseT += dt;
-    if (cop.loseT > COP.giveUpSeconds) return 'giveup';
-  } else {
-    cop.loseT = 0;
+function nearestThreat(world, ped) {
+  const { player } = world;
+  // Mobil pemain yang melaju kencang, atau peluru di dekatnya.
+  if (!player.onFoot && player.car && Math.abs(player.car.speed) > 200 && dist(ped, player.car) < 160) return player.car;
+  for (const b of world.bullets) {
+    if (Math.hypot(b.x - ped.x, b.y - ped.y) < 120) return b;
   }
   return null;
 }
 
-// Simple circle-vs-circle separation; returns damage for `a` when hard.
-export function separateCircles(a, b, damage) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const d = Math.hypot(dx, dy);
-  const min = a.radius + b.radius;
-  if (d >= min || d < 0.001) return 0;
-  const push = (min - d) / 2;
-  const nx = dx / d;
-  const ny = dy / d;
-  a.x -= nx * push;
-  a.y -= ny * push;
-  b.x += nx * push;
-  b.y += ny * push;
-  return damage || 0;
+// ---- Polisi ----
+export function spawnPDCar(world) {
+  const { city, rng, player } = world;
+  const p = freeRoadPointMin(city, rng, player.x, player.y, 350, 650);
+  const car = makeCar(p.x, p.y, Math.atan2(player.y - p.y, player.x - p.x), 'pd', '#1a1a2e');
+  car.speed = 300;
+  world.pdCars.push(car);
+  return car;
 }
 
-export { Rng };
+export function spawnFootCop(world) {
+  const { city, rng, player } = world;
+  const p = freeRoadPointMin(city, rng, player.x, player.y, 280, 450);
+  const cop = makeFootCop(p.x, p.y);
+  world.footCops.push(cop);
+  return cop;
+}
+
+export function updatePDCars(world, dt) {
+  const { player } = world;
+  for (const car of [...world.pdCars]) {
+    car.crashCd = Math.max(0, car.crashCd - dt);
+    car.ramCd = Math.max(0, car.ramCd - dt);
+    car.shootCd = Math.max(0, car.shootCd - dt);
+    const d = dist(car, player);
+    // Wanted 0 = polisi menyerah: menjauh lalu despawn.
+    if (world.wanted === 0) {
+      const away = Math.atan2(car.y - player.y, car.x - player.x);
+      let diff = away - car.angle;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      stepCar(car, 1, Math.max(-1, Math.min(1, diff * 2)), false, dt);
+      moveCar(world.city, car, dt);
+      if (d > 900) world.pdCars.splice(world.pdCars.indexOf(car), 1);
+      continue;
+    }
+    const targetAngle = Math.atan2(player.y - car.y, player.x - car.x);
+    let diff = targetAngle - car.angle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    const steer = Math.max(-1, Math.min(1, diff * 2));
+    const throttle = d > 60 ? 1 : 0.4;
+    stepCar(car, throttle, steer, false, dt);
+    moveCar(world.city, car, dt);
+    // Menabrak pemain: damage + dorong mundur, ada cooldown.
+    const target = player.onFoot ? player : player.car;
+    if (target && Math.hypot(car.x - target.x, car.y - target.y) < 46 && car.ramCd <= 0) {
+      car.ramCd = CFG.pdRamCooldown;
+      world.damagePlayer(CFG.pdRamDamage, 'ram');
+      if (!player.onFoot && player.car) {
+        player.car.speed *= -0.3;
+        player.car.x += Math.cos(car.angle) * 24;
+        player.car.y += Math.sin(car.angle) * 24;
+      }
+      world.audio?.crash();
+    }
+    // Menembak dari dekat, akurasi 50%.
+    if (d < CFG.pdShootRange && car.shootCd <= 0 && player.hp > 0) {
+      car.shootCd = CFG.pdShootCooldown;
+      if (Math.random() < CFG.pdShootAccuracy) {
+        world.damagePlayer(CFG.pdShootDamage, 'shot');
+      }
+      world.audio?.sirenBlip();
+    }
+    if (d > 1600) world.pdCars.splice(world.pdCars.indexOf(car), 1);
+  }
+}
+
+export function updateFootCops(world, dt) {
+  const { player } = world;
+  for (const cop of [...world.footCops]) {
+    cop.shootCd = Math.max(0, cop.shootCd - dt);
+    const d = dist(cop, player);
+    const sees = d < 620 && player.hp > 0;
+    if (sees) cop.lastSeen = world.time;
+    const lostFor = world.time - cop.lastSeen;
+    if (world.wanted > 0 && sees) cop.state = 'chase';
+    else if (cop.state === 'chase' && lostFor > CFG.copGiveUpTime) cop.state = 'giveup';
+    if (cop.state === 'chase') {
+      const ang = Math.atan2(player.y - cop.y, player.x - cop.x);
+      cop.angle = ang;
+      const spd = 235;
+      tryMove(world.city, cop, cop.x + Math.cos(ang) * spd * dt, cop.y + Math.sin(ang) * spd * dt, 10);
+      // Membekuk: dekat cukup lama.
+      if (d < CFG.footCopBustRange) {
+        cop.bustT += dt;
+        if (cop.bustT >= CFG.footCopBustTime) {
+          world.bustPlayer();
+          cop.bustT = 0;
+        }
+      } else {
+        cop.bustT = 0;
+      }
+      // Pukul pemain dari dekat.
+      if (d < 42 && cop.shootCd <= 0) {
+        cop.shootCd = CFG.footCopCooldown;
+        world.damagePlayer(CFG.footCopDamage, 'hit');
+      }
+    } else if (cop.state === 'patrol') {
+      cop.dirT -= dt;
+      if (cop.dirT <= 0) {
+        cop.dir = Math.random() * Math.PI * 2;
+        cop.dirT = 1 + Math.random() * 3;
+      }
+      tryMove(world.city, cop, cop.x + Math.cos(cop.dir) * 60 * dt, cop.y + Math.sin(cop.dir) * 60 * dt, 10);
+    } else {
+      // giveup: berjalan menjauh lalu despawn.
+      const ang = Math.atan2(cop.y - player.y, cop.x - player.x);
+      tryMove(world.city, cop, cop.x + Math.cos(ang) * 120 * dt, cop.y + Math.sin(ang) * 120 * dt, 10);
+      if (d > 900) world.footCops.splice(world.footCops.indexOf(cop), 1);
+    }
+  }
+}
