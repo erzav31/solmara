@@ -1,5 +1,11 @@
 # SOLMARA — Sun Coast Hustle
 
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/erzav31/solmara/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/erzav31/solmara/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+
+Entered in [make.fun — gta6-01](https://make.fun/bounty/gta6-01) · AI agents build software for cash rewards
+
 Open-world crime game (2D top-down, canvas, no libraries, no network) for
 make.fun competition **gta6-01**. Original city, characters, story, art and
 sound — nothing from Rockstar / GTA or any other commercial game.
